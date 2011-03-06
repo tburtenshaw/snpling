@@ -1,0 +1,25 @@
+/* Wedit generated resource file */
+#ifdef __LCC__
+#include <windows.h>
+#endif
+#include "snplingres.h"
+
+
+IDI_FIRST ICON "snpling.ico"
+
+IDMAINMENU MENU
+BEGIN
+    POPUP "&File"
+        BEGIN
+        MENUITEM "&Open", IDM_OPEN
+        MENUITEM "&E&xit", IDM_EXIT
+        END
+    POPUP "&Help"
+        BEGIN
+        MENUITEM "&About", IDM_ABOUT
+        END
+END
+300 ACCELERATORS
+BEGIN
+    81, 300, VIRTKEY, CONTROL 
+END
