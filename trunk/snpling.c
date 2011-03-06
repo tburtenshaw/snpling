@@ -19,6 +19,8 @@ struct sCounts;
 
 LRESULT CALLBACK MainWndProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
 LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
+int GenomeInfoPaint(HWND hwnd);
+
 int MessageSnp(HWND hwnd, struct sSnpEntry *snp);
 int MessageCount(HWND hwnd, struct sCounts *count);
 int SnpFromLine(struct sSnpEntry *snp, char *line);
@@ -111,7 +113,7 @@ static BOOL InitApplication(void)
 
 	//Main window
 	memset(&wc,0,sizeof(WNDCLASS));
-	wc.style = CS_HREDRAW|CS_VREDRAW |CS_DBLCLKS;
+	wc.style = CS_DBLCLKS;
 	wc.lpfnWndProc = (WNDPROC)MainWndProc;
 	wc.hInstance = hInst;
 	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
@@ -124,7 +126,7 @@ static BOOL InitApplication(void)
 
 	//Genome infoboxes
 	memset(&wc,0,sizeof(WNDCLASS));
-	wc.style = CS_HREDRAW|CS_VREDRAW |CS_DBLCLKS;
+	wc.style = CS_DBLCLKS;
 	wc.lpfnWndProc = (WNDPROC)GenomeInfoProc;
 	wc.hInstance = hInst;
 	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+2);
@@ -225,18 +227,7 @@ void MainWndProc_OnCommand(HWND hwnd, int id, HWND hwndCtl, UINT codeNotify)
 		fclose(fDNA);
 
 		genome->hwnd = CreateWindow("GenomeInfoBoxClass", genome->filename, WS_BORDER|WS_CHILD|WS_VISIBLE, 32,windowloc.y, 180,120, hwnd, NULL, hInst, NULL);
-
-//		MessageCount(hwnd, &genome->count);
-
-//		int i;
-//		for (i=1;i<26;i++)	{
-//			MessageCount(hwnd, &genome->chromosome[i].count);
-//		}
-
-
-
-
-//		MessageBox(hwnd,genome->comments,"Comments",0);
+		SetWindowLong(genome->hwnd, GWL_USERDATA, (long)genome);
 		break;
 
 		case IDM_EXIT:
@@ -369,15 +360,38 @@ LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 	case WM_DESTROY:
 		PostQuitMessage(0);
 		break;
+	case WM_PAINT:
+		GenomeInfoPaint(hwnd);
+		break;
+	case WM_ERASEBKGND:	//we'll do the erasing - to prevent flicker
+    	return 1;
 	default:
 		return DefWindowProc(hwnd,msg,wParam,lParam);
 	}
 	return 0;
 }
 
+int GenomeInfoPaint(HWND hwnd)
+{
+	struct sGenome *genome;
+
+	HDC hdc;
+	PAINTSTRUCT ps;
+	RECT	clientRect;
+	char	textbuffer[256];
+	int		textlen;
+
+	genome=(void*)GetWindowLong(hwnd, GWL_USERDATA);
+
+	GetClientRect(hwnd, &clientRect);
+	hdc=BeginPaint(hwnd, &ps);
+
+	sprintf(textbuffer,"%s", genome->filename);
+	textlen=strlen(textbuffer);
+	ExtTextOut(hdc, 0,0,ETO_OPAQUE, &clientRect, textbuffer, textlen, NULL);
 
 
+	EndPaint(hwnd, &ps);
 
-
-
-
+	return 0;
+}
