@@ -25,6 +25,8 @@ int MessageSnp(HWND hwnd, struct sSnpEntry *snp);
 int MessageCount(HWND hwnd, struct sCounts *count);
 int SnpFromLine(struct sSnpEntry *snp, char *line);
 int AddLineToComments(struct sGenome *genome, char *line);
+int OpenGenomeDialog(HWND hwnd);
+int LoadGenomeFile(HWND hwnd, char *filename);
 
 struct sSnpEntry //Endian oblivious - used to fread direct from zim
 {
@@ -78,33 +80,122 @@ struct sGenome
 };
 
 
-int GetFileName(char *buffer,int buflen)
+int OpenGenomeDialog(HWND hwnd)
 {
-	char tmpfilter[40];
-	int i = 0;
+	#define MAX_MULTIPATH MAX_PATH * 8
+
 	OPENFILENAME ofn;
+	char *filenamepart;	//hold the pointer to the specific file if a list is returned
+	char fullpath[MAX_PATH];
+	char buffer[MAX_MULTIPATH];
+
+	int	r;
 
 	memset(&ofn,0,sizeof(ofn));
 	ofn.lStructSize = sizeof(ofn);
 	ofn.hInstance = GetModuleHandle(NULL);
 	ofn.hwndOwner = GetActiveWindow();
 	ofn.lpstrFile = buffer;
-	ofn.nMaxFile = buflen;
+	ofn.nMaxFile = MAX_MULTIPATH;
 	ofn.lpstrTitle = "Open";
 	ofn.nFilterIndex = 2;
 	ofn.lpstrDefExt = "txt";
 	strcpy(buffer,"*.txt");
-	strcpy(tmpfilter,"All files,*.*,Text Files,*.txt");
-	while(tmpfilter[i]) {
-		if (tmpfilter[i] == ',')
-			tmpfilter[i] = 0;
-		i++;
-	}
-	tmpfilter[i++] = 0; tmpfilter[i++] = 0;
-	ofn.Flags = 0x1C1E;
-	ofn.lpstrFilter = tmpfilter;
-	return GetOpenFileName(&ofn);
+	ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST| OFN_HIDEREADONLY | OFN_ALLOWMULTISELECT|OFN_EXPLORER;
+	ofn.lpstrFilter = "All files\0*.*\0Text file (*.txt)\0*.txt\0";
 
+	r=GetOpenFileName(&ofn);
+
+	if (!r)
+		return 0;
+
+	filenamepart=ofn.lpstrFile+strlen(ofn.lpstrFile)+1;
+	if (!(*filenamepart))	{	//we've only selected one file
+		LoadGenomeFile(hwnd, ofn.lpstrFile);
+	}
+	else	{
+		while (*filenamepart)	{
+			sprintf(fullpath, "%s\\%s", ofn.lpstrFile, filenamepart);
+			LoadGenomeFile(hwnd, fullpath);
+			filenamepart+=strlen(filenamepart)+1;
+		}
+	}
+
+	return  1;
+}
+
+int LoadGenomeFile(HWND hwnd, char *filename)
+{
+	FILE * fDNA;
+	struct sSnpEntry *snpEntry;
+	struct sChunk *snpChunk;
+	struct sChunk *prevChunk;
+	struct sGenome *genome;
+	struct sGenome *othergenome;
+	int		arrayPos;
+	int		r;
+	POINT	windowloc;
+
+
+
+	fDNA = fopen(filename, "r");
+	genome = malloc(sizeof(struct sGenome));	//Get memory for new genome
+	memset(genome, 0, sizeof(struct sGenome));	//Set it all to zero initially
+	//Set some characteristics of the genome
+	strcpy(genome->filename, filename);	//Filename
+	genome->next = NULL;	//this will be set already (with memset) but I like to do it explicitly
+
+	othergenome = (void *)GetWindowLong(hwnd, GWL_USERDATA);
+	windowloc.y=24;
+	if (othergenome == 0)	{	//if this is our first genome, then it's stored in main window
+		SetWindowLong(hwnd, GWL_USERDATA, (long)genome);
+		//MessageBox(hwnd, "Using main window","test",0);
+	}
+	else	{
+		windowloc.y+=130;
+		while (othergenome->next)	{
+			othergenome=othergenome->next;
+			windowloc.y+=130;
+			//MessageBox(hwnd, "Trying linked list","test",0);
+		}
+		othergenome->next = genome;
+	}
+
+
+
+	snpChunk = malloc(sizeof(struct sChunk));
+	genome->firstChunk=snpChunk;
+	arrayPos=0;
+
+	char line[256];
+	while(fgets(line, sizeof(line), fDNA))     {
+		if (line[0]=='#')	{//handle comments line
+			AddLineToComments(genome, line);
+		}
+		else if (SnpFromLine(&snpChunk->entry[arrayPos], line)) {
+			genome->count.total++;
+			genome->chromosome[snpChunk->entry[arrayPos].chrom].count.total++;
+			if (snpChunk->entry[arrayPos].genotype[0] == snpChunk->entry[arrayPos].genotype[1])	{
+				genome->count.homozygous++;
+				genome->chromosome[snpChunk->entry[arrayPos].chrom].count.homozygous++;
+			}
+
+			arrayPos++;
+			if (arrayPos==SNPSINCHUNK)	{	//if this chunk is full - make a new one
+				prevChunk=snpChunk;
+				snpChunk = malloc(sizeof(struct sChunk));	//allocate a new chunk
+				snpChunk->next = NULL;	//this is the new terminating linkedlist
+				prevChunk->next = snpChunk;	//point the old chunk to this new one
+				arrayPos=0;
+			}
+		}
+     }
+	fclose(fDNA);
+
+	genome->hwnd = CreateWindow("GenomeInfoBoxClass", genome->filename, WS_BORDER|WS_CHILD|WS_VISIBLE, 32,windowloc.y, 180,120, hwnd, NULL, hInst, NULL);
+	SetWindowLong(genome->hwnd, GWL_USERDATA, (long)genome);
+
+	return 0;
 }
 
 static BOOL InitApplication(void)
@@ -153,81 +244,11 @@ HWND CreatesnplingWndClassWnd(void)
 }
 
 void MainWndProc_OnCommand(HWND hwnd, int id, HWND hwndCtl, UINT codeNotify)
-{	char buffer[MAX_PATH];
-	FILE * fDNA;
-	struct sSnpEntry *snpEntry;
-	struct sChunk *snpChunk;
-	struct sChunk *prevChunk;
-	struct sGenome *genome;
-	struct sGenome *othergenome;
-	int		arrayPos;
-	int		r;
-	POINT	windowloc;
+{
 
 	switch(id) {
 		case IDM_OPEN:
-		r = GetFileName(buffer,sizeof(buffer));
-		if (!r)	//If no file was chosen
-			return;
-		fDNA = fopen(buffer, "r");
-		genome = malloc(sizeof(struct sGenome));	//Get memory for new genome
-		memset(genome, 0, sizeof(struct sGenome));	//Set it all to zero initially
-		//Set some characteristics of the genome
-		strcpy(genome->filename, buffer);	//Filename
-		genome->next = NULL;	//this will be set already (with memset) but I like to do it explicitly
-
-		othergenome = (void *)GetWindowLong(hwnd, GWL_USERDATA);
-		windowloc.y=24;
-		if (othergenome == 0)	{	//if this is our first genome, then it's stored in main window
-			SetWindowLong(hwnd, GWL_USERDATA, (long)genome);
-			//MessageBox(hwnd, "Using main window","test",0);
-		}
-		else	{
-			windowloc.y+=130;
-			while (othergenome->next)	{
-				othergenome=othergenome->next;
-				windowloc.y+=130;
-				//MessageBox(hwnd, "Trying linked list","test",0);
-			}
-			othergenome->next = genome;
-		}
-
-
-
-
-
-		snpChunk = malloc(sizeof(struct sChunk));
-		genome->firstChunk=snpChunk;
-		arrayPos=0;
-
-		char line[256];
-		while(fgets(line, sizeof(line), fDNA))     {
-			if (line[0]=='#')	{//handle comments line
-				AddLineToComments(genome, line);
-			}
-			else {
-				SnpFromLine(&snpChunk->entry[arrayPos], line);
-				genome->count.total++;
-				genome->chromosome[snpChunk->entry[arrayPos].chrom].count.total++;
-				if (snpChunk->entry[arrayPos].genotype[0] == snpChunk->entry[arrayPos].genotype[1])	{
-					genome->count.homozygous++;
-					genome->chromosome[snpChunk->entry[arrayPos].chrom].count.homozygous++;
-				}
-
-				arrayPos++;
-				if (arrayPos==SNPSINCHUNK)	{	//if this chunk is full - make a new one
-					prevChunk=snpChunk;
-					snpChunk = malloc(sizeof(struct sChunk));	//allocate a new chunk
-					snpChunk->next = NULL;	//this is the new terminating linkedlist
-					prevChunk->next = snpChunk;	//point the old chunk to this new one
-					arrayPos=0;
-				}
-			}
-     	}
-		fclose(fDNA);
-
-		genome->hwnd = CreateWindow("GenomeInfoBoxClass", genome->filename, WS_BORDER|WS_CHILD|WS_VISIBLE, 32,windowloc.y, 180,120, hwnd, NULL, hInst, NULL);
-		SetWindowLong(genome->hwnd, GWL_USERDATA, (long)genome);
+		OpenGenomeDialog(hwnd);
 		break;
 
 		case IDM_EXIT:
