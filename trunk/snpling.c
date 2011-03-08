@@ -8,6 +8,7 @@
 #define SNPSINCHUNK 4096	//Wasting this much space isn't too much of a concern
 							//and it's better than calling a malloc 500,000 times
 #define	MAXCOMMENTS 2048	//Maximum length of comments
+#define MAX_MULTIPATH MAX_PATH * 8	//to load multiple files
 
 HINSTANCE hInst;		// Instance handle
 HWND hwndMain;		//Main window handle
@@ -16,19 +17,31 @@ struct sChunk;	//contains a fix-length array of snps
 struct sChromosome;
 struct sGenome;
 struct sCounts;
+struct sGenomeWindowInfo;
 
 LRESULT CALLBACK MainWndProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
 LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
 int GenomeInfoPaint(HWND hwnd);
 
-int MessageSnp(HWND hwnd, struct sSnpEntry *snp);
-int MessageCount(HWND hwnd, struct sCounts *count);
 int SnpFromLine(struct sSnpEntry *snp, char *line);
 int AddLineToComments(struct sGenome *genome, char *line);
 int OpenGenomeDialog(HWND hwnd);
 int LoadGenomeFile(HWND hwnd, char *filename);
 
-struct sSnpEntry //Endian oblivious - used to fread direct from zim
+//Debugging
+int MessageSnp(HWND hwnd, struct sSnpEntry *snp);
+int MessageCount(HWND hwnd, struct sCounts *count);
+int MessagePoint(HWND hwnd, POINT *p, char *heading);
+
+struct sGenomeWindowInfo
+{
+	HWND	hwnd;
+	POINT	initialClickPoint;	//used for moving
+	RECT	originalLocationRect;
+	int		mouseBeenPushed;	//have we clicked the mouse
+};
+
+struct sSnpEntry
 {
 	char rstype[4];
 	long rsnumber;
@@ -46,6 +59,7 @@ struct sChunk
 struct sCounts	//stats to use both per chromosome, and per genome
 {
 	unsigned long total;
+	unsigned long autosomal;
 	unsigned long homozygous;	//heteros are snp minus homo
 	unsigned long adenine;
 	unsigned long cytosine;
@@ -76,14 +90,13 @@ struct sGenome
 
 	struct sGenome *next;
 
-	HWND	hwnd;
+	struct sGenomeWindowInfo windowInfo;
+
 };
 
 
 int OpenGenomeDialog(HWND hwnd)
 {
-	#define MAX_MULTIPATH MAX_PATH * 8
-
 	OPENFILENAME ofn;
 	char *filenamepart;	//hold the pointer to the specific file if a list is returned
 	char fullpath[MAX_PATH];
@@ -121,7 +134,7 @@ int OpenGenomeDialog(HWND hwnd)
 		}
 	}
 
-	return  1;
+	return  1;	//success
 }
 
 int LoadGenomeFile(HWND hwnd, char *filename)
@@ -137,8 +150,10 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 	POINT	windowloc;
 
 
-
 	fDNA = fopen(filename, "r");
+	if (!fDNA)
+		return 0;
+
 	genome = malloc(sizeof(struct sGenome));	//Get memory for new genome
 	memset(genome, 0, sizeof(struct sGenome));	//Set it all to zero initially
 	//Set some characteristics of the genome
@@ -179,6 +194,10 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 				genome->count.homozygous++;
 				genome->chromosome[snpChunk->entry[arrayPos].chrom].count.homozygous++;
 			}
+			if (snpChunk->entry[arrayPos].chrom<23)	{
+				genome->count.autosomal++;
+				genome->chromosome[snpChunk->entry[arrayPos].chrom].count.autosomal++;
+			}
 
 			arrayPos++;
 			if (arrayPos==SNPSINCHUNK)	{	//if this chunk is full - make a new one
@@ -192,8 +211,8 @@ int LoadGenomeFile(HWND hwnd, char *filename)
      }
 	fclose(fDNA);
 
-	genome->hwnd = CreateWindow("GenomeInfoBoxClass", genome->filename, WS_BORDER|WS_CHILD|WS_VISIBLE, 32,windowloc.y, 180,120, hwnd, NULL, hInst, NULL);
-	SetWindowLong(genome->hwnd, GWL_USERDATA, (long)genome);
+	genome->windowInfo.hwnd = CreateWindow("GenomeInfoBoxClass", genome->filename, WS_BORDER|WS_CHILD|WS_VISIBLE, 32,windowloc.y, 180,120, hwnd, NULL, hInst, NULL);
+	SetWindowLong(genome->windowInfo.hwnd, GWL_USERDATA, (long)genome);
 
 	return 0;
 }
@@ -315,6 +334,16 @@ int MessageCount(HWND hwnd, struct sCounts *count)
 
 }
 
+int MessagePoint(HWND hwnd, POINT *p, char *heading)
+{
+	char buffer[256];
+
+	sprintf(buffer, "X: %i, Y: %i", p->x, p->y);
+	MessageBox(hwnd, buffer, heading,0);
+	return 0;
+}
+
+
 int SnpFromLine(struct sSnpEntry *snp, char *line)
 {
 	char *result = NULL;
@@ -377,6 +406,11 @@ int AddLineToComments(struct sGenome *genome, char *line)
 
 LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 {
+	struct sGenome *genome;
+	POINT	mousePoint;
+	RECT	parentRect;
+	POINT	parentPoint;
+
 	switch (msg) {
 	case WM_DESTROY:
 		PostQuitMessage(0);
@@ -386,6 +420,51 @@ LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 		break;
 	case WM_ERASEBKGND:	//we'll do the erasing - to prevent flicker
     	return 1;
+	case WM_LBUTTONDOWN:
+		genome = (void*)GetWindowLong(hwnd,GWL_USERDATA);
+		BringWindowToTop(hwnd);
+		if (SetFocus(hwnd)!=hwnd)
+			InvalidateRect(hwnd, NULL, FALSE);
+		if (!genome->windowInfo.mouseBeenPushed)	{
+			SetCapture(hwnd);
+			GetClientRect(GetParent(hwnd), &parentRect);
+			parentPoint.x=parentRect.left;
+			parentPoint.y=parentRect.top;
+			ClientToScreen(GetParent(hwnd), &parentPoint);
+			genome->windowInfo.mouseBeenPushed=1;
+			genome->windowInfo.initialClickPoint.x=GET_X_LPARAM(lParam)+parentPoint.x;
+			genome->windowInfo.initialClickPoint.y=GET_Y_LPARAM(lParam)+parentPoint.y;
+			GetWindowRect(hwnd, &genome->windowInfo.originalLocationRect);
+		}
+		return 0;
+		break;
+	case WM_MOUSEMOVE:
+		genome = (void*)GetWindowLong(hwnd,GWL_USERDATA);
+		if (genome->windowInfo.mouseBeenPushed)	{
+
+			mousePoint.x = GET_X_LPARAM(lParam) - genome->windowInfo.initialClickPoint.x;
+			mousePoint.y = GET_Y_LPARAM(lParam) - genome->windowInfo.initialClickPoint.y;
+
+			if (mousePoint.x || mousePoint.y)	{
+				MoveWindow(hwnd,
+					genome->windowInfo.originalLocationRect.left+mousePoint.x,
+					genome->windowInfo.originalLocationRect.top+mousePoint.y,
+					genome->windowInfo.originalLocationRect.right-genome->windowInfo.originalLocationRect.left,
+					genome->windowInfo.originalLocationRect.bottom-genome->windowInfo.originalLocationRect.top,
+					TRUE);
+				GetWindowRect(hwnd, &genome->windowInfo.originalLocationRect);
+				}
+			}
+		return 0;
+		break;
+	case WM_LBUTTONUP:
+		genome = (void*)GetWindowLong(hwnd,GWL_USERDATA);
+		if (genome->windowInfo.mouseBeenPushed)	{
+			genome->windowInfo.mouseBeenPushed=0;
+			ReleaseCapture();
+		}
+		return 0;
+		break;
 	default:
 		return DefWindowProc(hwnd,msg,wParam,lParam);
 	}
@@ -402,15 +481,45 @@ int GenomeInfoPaint(HWND hwnd)
 	char	textbuffer[256];
 	int		textlen;
 
+	RECT	outputRect;
+	TEXTMETRIC textMetric;
+	int heightFont;
+	int x,y;
+
+
 	genome=(void*)GetWindowLong(hwnd, GWL_USERDATA);
 
 	GetClientRect(hwnd, &clientRect);
 	hdc=BeginPaint(hwnd, &ps);
 
+
+
+	GetTextMetrics(hdc, &textMetric);
+	heightFont= textMetric.tmHeight;
+
 	sprintf(textbuffer,"%s", genome->filename);
 	textlen=strlen(textbuffer);
-	ExtTextOut(hdc, 0,0,ETO_OPAQUE, &clientRect, textbuffer, textlen, NULL);
 
+	y=clientRect.top;
+	outputRect.left=clientRect.left; 	outputRect.right=clientRect.right;
+	outputRect.top=y;
+	y+=heightFont+1;
+	outputRect.bottom=y;
+	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print filename
+
+	sprintf(textbuffer, "%i SNPs", genome->count.total);
+	textlen=strlen(textbuffer);
+	outputRect.top=y;
+	y+=heightFont+1;
+	outputRect.bottom=y;
+	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print total snps
+
+	sprintf(textbuffer, "%i autosomal", genome->count.autosomal);
+	textlen=strlen(textbuffer);
+	outputRect.top=y;
+	y+=heightFont+1;
+	outputRect.bottom=y;
+	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print total snps
 
 	EndPaint(hwnd, &ps);
 
