@@ -38,6 +38,8 @@ struct sGenomeWindowInfo
 	HWND	hwnd;
 	POINT	initialClickPoint;	//used for moving
 	RECT	originalLocationRect;
+	int		originalHeight;
+	int		originalWidth;
 	int		mouseBeenPushed;	//have we clicked the mouse
 };
 
@@ -77,13 +79,14 @@ struct sChromosome
 struct sGenome
 {
 	struct sChunk *firstChunk;
-	struct sChromosome chromosome[26];			//info about chromosomes, we use 1-25
+	struct sChromosome chromosome[26];			//info about chromosomes, we use 1-25 (0's wasted)
 
 	struct sCounts count;
 
 	char	filename[MAX_PATH];
 	char	owner[256];	//the user name associated (if we can pull it from a file)
 	char	comments[MAXCOMMENTS];	//This contains the comments from the file
+	long	countXX;		//Does it have two alleles on the x-chromosome (even males have some on 23andme)
 	int		containsY;		//Does it have a Y chromosome?
 	int		containsM;		//Does the data have mitochondrial DNA?
 	int		chromosomeCount;
@@ -140,14 +143,16 @@ int OpenGenomeDialog(HWND hwnd)
 int LoadGenomeFile(HWND hwnd, char *filename)
 {
 	FILE * fDNA;
-	struct sSnpEntry *snpEntry;
 	struct sChunk *snpChunk;
 	struct sChunk *prevChunk;
 	struct sGenome *genome;
 	struct sGenome *othergenome;
 	int		arrayPos;
-	int		r;
 	POINT	windowloc;
+
+	char	localGenotype[2];	//make it shorter!
+	int		localChromosome;
+	int		containsRealBase;	//it's not a no-call or a placeholder
 
 
 	fDNA = fopen(filename, "r");
@@ -188,15 +193,60 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 			AddLineToComments(genome, line);
 		}
 		else if (SnpFromLine(&snpChunk->entry[arrayPos], line)) {
+			localChromosome=snpChunk->entry[arrayPos].chrom;
+			localGenotype[0]=snpChunk->entry[arrayPos].genotype[0];
+			localGenotype[1]=snpChunk->entry[arrayPos].genotype[1];
+
 			genome->count.total++;
-			genome->chromosome[snpChunk->entry[arrayPos].chrom].count.total++;
-			if (snpChunk->entry[arrayPos].genotype[0] == snpChunk->entry[arrayPos].genotype[1])	{
+			genome->chromosome[localChromosome].count.total++;
+
+			if (localGenotype[0]=='A' ||
+				localGenotype[0]=='T' ||
+				localGenotype[0]=='C' ||
+				localGenotype[0]=='G' ||
+				localGenotype[1]=='A' ||
+				localGenotype[1]=='T' ||
+				localGenotype[1]=='C' ||
+				localGenotype[1]=='G')
+				{containsRealBase=1;}
+			else
+				{containsRealBase=0;}
+
+			//Count homozygous
+			if ((localGenotype[0] == localGenotype[1]) && (containsRealBase))	{
 				genome->count.homozygous++;
 				genome->chromosome[snpChunk->entry[arrayPos].chrom].count.homozygous++;
 			}
-			if (snpChunk->entry[arrayPos].chrom<23)	{
+			//Count autosomal
+			if (localChromosome<23)	{
 				genome->count.autosomal++;
-				genome->chromosome[snpChunk->entry[arrayPos].chrom].count.autosomal++;
+				//genome->chromosome[localChromosome].count.autosomal++; //not much sense to count this per chrom
+			}
+			else	{
+				if ((localChromosome==24) && (containsRealBase))	{
+					genome->containsY=1;
+				}
+				else if ((localChromosome==25) && (containsRealBase))	{
+					genome->containsM=1;	//contains mitochondrial
+				}
+
+				else if ((localChromosome==23) && (containsRealBase))	{
+					if 	(
+							(	(localGenotype[1] == 'A') ||
+								(localGenotype[1] == 'T') ||
+								(localGenotype[1] == 'C') ||
+								(localGenotype[1] == 'G')
+								) &&
+							(	(localGenotype[0] == 'A') ||
+								(localGenotype[0] == 'T') ||
+								(localGenotype[0] == 'C') ||
+								(localGenotype[0] == 'G')
+								)
+							)
+					{
+						genome->countXX++;
+					}
+				}
 			}
 
 			arrayPos++;
@@ -208,10 +258,10 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 				arrayPos=0;
 			}
 		}
-     }
+	}
 	fclose(fDNA);
 
-	genome->windowInfo.hwnd = CreateWindow("GenomeInfoBoxClass", genome->filename, WS_BORDER|WS_CHILD|WS_VISIBLE, 32,windowloc.y, 180,120, hwnd, NULL, hInst, NULL);
+	genome->windowInfo.hwnd = CreateWindow("GenomeInfoBoxClass", genome->filename, WS_CHILD|WS_VISIBLE, 32,windowloc.y, 180,120, hwnd, NULL, hInst, NULL);
 	SetWindowLong(genome->windowInfo.hwnd, GWL_USERDATA, (long)genome);
 
 	return 0;
@@ -226,7 +276,7 @@ static BOOL InitApplication(void)
 	wc.style = CS_DBLCLKS;
 	wc.lpfnWndProc = (WNDPROC)MainWndProc;
 	wc.hInstance = hInst;
-	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
+	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+2);
 	wc.lpszClassName = "snplingWndClass";
 	wc.lpszMenuName = MAKEINTRESOURCE(IDMAINMENU);
 	wc.hCursor = LoadCursor(NULL,IDC_ARROW);
@@ -239,7 +289,7 @@ static BOOL InitApplication(void)
 	wc.style = CS_DBLCLKS;
 	wc.lpfnWndProc = (WNDPROC)GenomeInfoProc;
 	wc.hInstance = hInst;
-	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+2);
+	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
 	wc.lpszClassName = "GenomeInfoBoxClass";
 	wc.lpszMenuName = MAKEINTRESOURCE(IDMAINMENU);
 	wc.hCursor = LoadCursor(NULL,IDC_ARROW);
@@ -408,6 +458,7 @@ LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 {
 	struct sGenome *genome;
 	POINT	mousePoint;
+	POINT	newPoint;
 	RECT	parentRect;
 	POINT	parentPoint;
 
@@ -419,51 +470,63 @@ LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 		GenomeInfoPaint(hwnd);
 		break;
 	case WM_ERASEBKGND:	//we'll do the erasing - to prevent flicker
-    	return 1;
+		return 1;
 	case WM_LBUTTONDOWN:
 		genome = (void*)GetWindowLong(hwnd,GWL_USERDATA);
 		BringWindowToTop(hwnd);
 		if (SetFocus(hwnd)!=hwnd)
-			InvalidateRect(hwnd, NULL, FALSE);
-		if (!genome->windowInfo.mouseBeenPushed)	{
-			SetCapture(hwnd);
-			GetClientRect(GetParent(hwnd), &parentRect);
-			parentPoint.x=parentRect.left;
-			parentPoint.y=parentRect.top;
-			ClientToScreen(GetParent(hwnd), &parentPoint);
-			genome->windowInfo.mouseBeenPushed=1;
-			genome->windowInfo.initialClickPoint.x=GET_X_LPARAM(lParam)+parentPoint.x;
-			genome->windowInfo.initialClickPoint.y=GET_Y_LPARAM(lParam)+parentPoint.y;
-			GetWindowRect(hwnd, &genome->windowInfo.originalLocationRect);
-		}
-		return 0;
-		break;
-	case WM_MOUSEMOVE:
-		genome = (void*)GetWindowLong(hwnd,GWL_USERDATA);
-		if (genome->windowInfo.mouseBeenPushed)	{
-
-			mousePoint.x = GET_X_LPARAM(lParam) - genome->windowInfo.initialClickPoint.x;
-			mousePoint.y = GET_Y_LPARAM(lParam) - genome->windowInfo.initialClickPoint.y;
-
-			if (mousePoint.x || mousePoint.y)	{
-				MoveWindow(hwnd,
-					genome->windowInfo.originalLocationRect.left+mousePoint.x,
-					genome->windowInfo.originalLocationRect.top+mousePoint.y,
-					genome->windowInfo.originalLocationRect.right-genome->windowInfo.originalLocationRect.left,
-					genome->windowInfo.originalLocationRect.bottom-genome->windowInfo.originalLocationRect.top,
-					TRUE);
+				InvalidateRect(hwnd, NULL, FALSE);
+		if (!genome->windowInfo.mouseBeenPushed)        {
+				SetCapture(hwnd);
+				GetClientRect(GetParent(hwnd), &parentRect);
+				parentPoint.x=parentRect.left;
+				parentPoint.y=parentRect.top;
+				ClientToScreen(GetParent(hwnd), &parentPoint);
+				genome->windowInfo.mouseBeenPushed=1;
+				genome->windowInfo.initialClickPoint.x=GET_X_LPARAM(lParam)+parentPoint.x;
+				genome->windowInfo.initialClickPoint.y=GET_Y_LPARAM(lParam)+parentPoint.y;
 				GetWindowRect(hwnd, &genome->windowInfo.originalLocationRect);
+				genome->windowInfo.originalWidth = genome->windowInfo.originalLocationRect.right-genome->windowInfo.originalLocationRect.left;
+				genome->windowInfo.originalHeight= genome->windowInfo.originalLocationRect.bottom-genome->windowInfo.originalLocationRect.top;
+		}
+		break;
+		case WM_MOUSEMOVE:
+			genome = (void*)GetWindowLong(hwnd,GWL_USERDATA);
+			if (genome->windowInfo.mouseBeenPushed) {
+				mousePoint.x = GET_X_LPARAM(lParam) - genome->windowInfo.initialClickPoint.x;
+				mousePoint.y = GET_Y_LPARAM(lParam) - genome->windowInfo.initialClickPoint.y;
+				if (mousePoint.x || mousePoint.y)       {
+					newPoint.x=genome->windowInfo.originalLocationRect.left+mousePoint.x;
+					newPoint.y=genome->windowInfo.originalLocationRect.top+mousePoint.y;
+					if (newPoint.x<0) newPoint.x=0;
+					if (newPoint.y<0) newPoint.y=0;
+					GetClientRect(GetParent(hwnd), &parentRect);
+					if (newPoint.x+genome->windowInfo.originalWidth > parentRect.right)
+						newPoint.x=parentRect.right-genome->windowInfo.originalWidth;
+					if (newPoint.y+genome->windowInfo.originalHeight > parentRect.bottom)
+						newPoint.y=parentRect.bottom-genome->windowInfo.originalHeight;
+
+					MoveWindow(hwnd,
+							newPoint.x,
+							newPoint.y,
+							genome->windowInfo.originalWidth,
+							genome->windowInfo.originalHeight,
+							TRUE);
+					GetWindowRect(hwnd, &genome->windowInfo.originalLocationRect);
 				}
 			}
-		return 0;
 		break;
+
 	case WM_LBUTTONUP:
 		genome = (void*)GetWindowLong(hwnd,GWL_USERDATA);
 		if (genome->windowInfo.mouseBeenPushed)	{
 			genome->windowInfo.mouseBeenPushed=0;
 			ReleaseCapture();
 		}
-		return 0;
+		break;
+	case WM_CAPTURECHANGED:
+		genome = (void*)GetWindowLong(hwnd,GWL_USERDATA);
+		genome->windowInfo.mouseBeenPushed = 0;
 		break;
 	default:
 		return DefWindowProc(hwnd,msg,wParam,lParam);
@@ -485,7 +548,7 @@ int GenomeInfoPaint(HWND hwnd)
 	TEXTMETRIC textMetric;
 	int heightFont;
 	int x,y;
-
+	int isXX=0;
 
 	genome=(void*)GetWindowLong(hwnd, GWL_USERDATA);
 
@@ -519,7 +582,22 @@ int GenomeInfoPaint(HWND hwnd)
 	outputRect.top=y;
 	y+=heightFont+1;
 	outputRect.bottom=y;
-	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print total snps
+	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print autosomal snps
+
+	if (genome->countXX*10 > genome->chromosome[23].count.total)	//if xxs are more than 10%
+		isXX=1;
+	sprintf(textbuffer, "%i,X%s%s%s", 45+genome->containsY+isXX, isXX ? "X":"", genome->containsY ? "Y":"", genome->containsM ? "+m":"");
+	textlen=strlen(textbuffer);
+	outputRect.top=y;
+	y+=heightFont+1;
+	outputRect.bottom=y;
+	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print 46,XY etc
+
+	outputRect.top=y;
+	outputRect.bottom=clientRect.bottom;
+	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, NULL, 0, NULL);	//fill in bottom
+
+
 
 	EndPaint(hwnd, &ps);
 
