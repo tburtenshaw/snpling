@@ -84,6 +84,7 @@ struct sGenome
 	struct sCounts count;
 
 	char	filename[MAX_PATH];
+	char	*justfilename;	//points to the above without path
 	char	owner[256];	//the user name associated (if we can pull it from a file)
 	char	comments[MAXCOMMENTS];	//This contains the comments from the file
 	long	countXX;		//Does it have two alleles on the x-chromosome (even males have some on 23andme)
@@ -215,7 +216,32 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 			//Count homozygous
 			if ((localGenotype[0] == localGenotype[1]) && (containsRealBase))	{
 				genome->count.homozygous++;
-				genome->chromosome[snpChunk->entry[arrayPos].chrom].count.homozygous++;
+				genome->chromosome[localChromosome].count.homozygous++;
+				switch (localGenotype[0])	{	//the other will be the same
+					case 'A':
+						genome->count.adenine+=2;
+						genome->chromosome[localChromosome].count.adenine+=2;
+					break;
+					case 'T':
+						genome->count.thymine+=2;
+						genome->chromosome[localChromosome].count.thymine+=2;
+					break;
+					case 'C':
+						genome->count.cytosine+=2;
+						genome->chromosome[localChromosome].count.cytosine+=2;
+					break;
+					case 'G':
+						genome->count.guanine+=2;
+						genome->chromosome[localChromosome].count.guanine+=2;
+					break;
+				}
+				//if (localGenotype[0]=='A')	{
+				//	genome->count.adenine+=2;
+				//	genome->chromosome[localChromosome].count.adenine+=2;
+
+				//}
+
+
 			}
 			//Count autosomal
 			if (localChromosome<23)	{
@@ -549,6 +575,7 @@ int GenomeInfoPaint(HWND hwnd)
 	int heightFont;
 	int x,y;
 	int isXX=0;
+	int totalbases;
 
 	genome=(void*)GetWindowLong(hwnd, GWL_USERDATA);
 
@@ -593,6 +620,18 @@ int GenomeInfoPaint(HWND hwnd)
 	outputRect.bottom=y;
 	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print 46,XY etc
 
+
+	totalbases=genome->count.adenine+ genome->count.thymine+ genome->count.cytosine+ genome->count.guanine;
+	if (totalbases>0)	{
+		sprintf(textbuffer, "A:%i T:%i C:%i G:%i", genome->count.adenine*100/totalbases, genome->count.thymine*100/totalbases, genome->count.cytosine*100/totalbases, genome->count.guanine*100/totalbases);
+		textlen=strlen(textbuffer);
+		outputRect.top=y;
+		y+=heightFont+1;
+		outputRect.bottom=y;
+		ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print autosomal snps
+	}
+
+	//Fill rest
 	outputRect.top=y;
 	outputRect.bottom=clientRect.bottom;
 	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, NULL, 0, NULL);	//fill in bottom
