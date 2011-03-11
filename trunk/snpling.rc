@@ -12,7 +12,8 @@ BEGIN
     POPUP "&File"
         BEGIN
         MENUITEM "&Open", IDM_OPEN
-        MENUITEM "&E&xit", IDM_EXIT
+		MENUITEM "&Compare", IDM_COMPARE
+        MENUITEM "E&xit", IDM_EXIT
         END
     POPUP "&Help"
         BEGIN
@@ -21,5 +22,5 @@ BEGIN
 END
 300 ACCELERATORS
 BEGIN
-    81, 300, VIRTKEY, CONTROL 
+    81, 300, VIRTKEY, CONTROL
 END
