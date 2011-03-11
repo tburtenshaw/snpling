@@ -28,6 +28,8 @@ int SnpFromLine(struct sSnpEntry *snp, char *line);
 int AddLineToComments(struct sGenome *genome, char *line);
 int OpenGenomeDialog(HWND hwnd);
 int LoadGenomeFile(HWND hwnd, char *filename);
+char * FilenameStart(char *s);
+int IsolateNameAndDate(struct sGenome *genome);
 
 //Calculation
 int IsProperBase(char b);	//is it ATC or G? or nothing
@@ -305,6 +307,9 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 	}
 	fclose(fDNA);
 
+	//MessageBox(0, genome->filename, "Filename", 0);
+	genome->justfilename=FilenameStart(genome->filename);
+	IsolateNameAndDate(genome);	//Get the name and date loaded
 	genome->windowInfo.hwnd = CreateWindow("GenomeInfoBoxClass", genome->filename, WS_CHILD|WS_VISIBLE, 32,windowloc.y, 180,120, hwnd, NULL, hInst, NULL);
 	SetWindowLong(genome->windowInfo.hwnd, GWL_USERDATA, (long)genome);
 
@@ -501,8 +506,6 @@ int AddLineToComments(struct sGenome *genome, char *line)
 		return 0;
 	}
 
-
-
 	memcpy(genome->comments+lencomments, line, lenline);
 
 	return 1;
@@ -659,6 +662,14 @@ int GenomeInfoPaint(HWND hwnd)
 		ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print autosomal snps
 	}
 
+	sprintf(textbuffer, "Name %s", genome->owner);
+	textlen=strlen(textbuffer);
+	outputRect.top=y;
+	y+=heightFont+1;
+	outputRect.bottom=y;
+	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print autosomal snps
+
+
 	//Fill rest
 	outputRect.top=y;
 	outputRect.bottom=clientRect.bottom;
@@ -679,15 +690,16 @@ long GenomeSimilarity(struct sGenome *g1, struct sGenome *g2)
 	struct sChunk *c1;
 	struct sChunk *c2;
 
-	int i;
+	int i1;
+	int i2;
 	long l=0;
 
 	c1 = g1->firstChunk;
 	c2 = g2->firstChunk;
 	while (c1)	{
-		for (i=0;i<SNPSINCHUNK;i++)	{
-			e1 = &c1->entry[i];
-			e2 = &c2->entry[i];
+		for (i1=0, i2=0;(i1<SNPSINCHUNK);i1++)	{
+			e1 = &c1->entry[i1];
+			e2 = &c2->entry[i2];
 			if ( (e1->genotype[0] == e2->genotype[0]) && (IsProperBase(e2->genotype[0])) )
 				l++;
 			if ( (e2->genotype[1] == e2->genotype[1]) && (IsProperBase(e2->genotype[1])) )
@@ -711,4 +723,31 @@ int IsProperBase(char b)
 		return 1;
 	return 0;
 
+}
+
+int IsolateNameAndDate(struct sGenome *genome)
+{
+	if (!genome->justfilename)
+		return 0;
+
+	if (strncmp(genome->justfilename, "genome_", 7))	{
+		genome->owner[0]=0;
+		return 0;
+	}
+
+	strcpy(genome->owner, genome->justfilename+7);
+
+
+
+	return 0;
+}
+
+char * FilenameStart(char *s)
+{
+
+	if (s)	{
+		s=strrchr(s, '\\')+1;
+	}
+
+	return s;
 }
