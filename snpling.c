@@ -23,10 +23,15 @@ LRESULT CALLBACK MainWndProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
 LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
 int GenomeInfoPaint(HWND hwnd);
 
+//Loading
 int SnpFromLine(struct sSnpEntry *snp, char *line);
 int AddLineToComments(struct sGenome *genome, char *line);
 int OpenGenomeDialog(HWND hwnd);
 int LoadGenomeFile(HWND hwnd, char *filename);
+
+//Calculation
+int IsProperBase(char b);	//is it ATC or G? or nothing
+long GenomeSimilarity(struct sGenome *g1, struct sGenome *g2);
 
 //Debugging
 int MessageSnp(HWND hwnd, struct sSnpEntry *snp);
@@ -201,14 +206,7 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 			genome->count.total++;
 			genome->chromosome[localChromosome].count.total++;
 
-			if (localGenotype[0]=='A' ||
-				localGenotype[0]=='T' ||
-				localGenotype[0]=='C' ||
-				localGenotype[0]=='G' ||
-				localGenotype[1]=='A' ||
-				localGenotype[1]=='T' ||
-				localGenotype[1]=='C' ||
-				localGenotype[1]=='G')
+			if (IsProperBase(localGenotype[0]) || IsProperBase(localGenotype[1]))
 				{containsRealBase=1;}
 			else
 				{containsRealBase=0;}
@@ -235,12 +233,44 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 						genome->chromosome[localChromosome].count.guanine+=2;
 					break;
 				}
-				//if (localGenotype[0]=='A')	{
-				//	genome->count.adenine+=2;
-				//	genome->chromosome[localChromosome].count.adenine+=2;
-
-				//}
-
+			}
+			else if (containsRealBase)	{
+				switch (localGenotype[0])	{	//the other will be the same
+					case 'A':
+						genome->count.adenine++;
+						genome->chromosome[localChromosome].count.adenine++;
+					break;
+					case 'T':
+						genome->count.thymine++;
+						genome->chromosome[localChromosome].count.thymine++;
+					break;
+					case 'C':
+						genome->count.cytosine++;
+						genome->chromosome[localChromosome].count.cytosine++;
+					break;
+					case 'G':
+						genome->count.guanine++;
+						genome->chromosome[localChromosome].count.guanine++;
+					break;
+				}
+				switch (localGenotype[1])	{	//the other will be the same
+					case 'A':
+						genome->count.adenine++;
+						genome->chromosome[localChromosome].count.adenine++;
+					break;
+					case 'T':
+						genome->count.thymine++;
+						genome->chromosome[localChromosome].count.thymine++;
+					break;
+					case 'C':
+						genome->count.cytosine++;
+						genome->chromosome[localChromosome].count.cytosine++;
+					break;
+					case 'G':
+						genome->count.guanine++;
+						genome->chromosome[localChromosome].count.guanine++;
+					break;
+				}
 
 			}
 			//Count autosomal
@@ -257,19 +287,7 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 				}
 
 				else if ((localChromosome==23) && (containsRealBase))	{
-					if 	(
-							(	(localGenotype[1] == 'A') ||
-								(localGenotype[1] == 'T') ||
-								(localGenotype[1] == 'C') ||
-								(localGenotype[1] == 'G')
-								) &&
-							(	(localGenotype[0] == 'A') ||
-								(localGenotype[0] == 'T') ||
-								(localGenotype[0] == 'C') ||
-								(localGenotype[0] == 'G')
-								)
-							)
-					{
+					if 	(IsProperBase(localGenotype[0]) && IsProperBase(localGenotype[1])) {
 						genome->countXX++;
 					}
 				}
@@ -344,6 +362,16 @@ void MainWndProc_OnCommand(HWND hwnd, int id, HWND hwndCtl, UINT codeNotify)
 	switch(id) {
 		case IDM_OPEN:
 		OpenGenomeDialog(hwnd);
+		break;
+
+		case IDM_COMPARE:
+		long l;
+		struct sGenome *genome;
+		char buffer[255];
+		genome = (void*)GetWindowLong(hwnd, GWL_USERDATA);
+		l = GenomeSimilarity(genome, genome->next);
+		sprintf(buffer, "Long: %i", l);
+		MessageBox(hwnd, buffer, "Compare", 0);
 		break;
 
 		case IDM_EXIT:
@@ -641,4 +669,46 @@ int GenomeInfoPaint(HWND hwnd)
 	EndPaint(hwnd, &ps);
 
 	return 0;
+}
+
+long GenomeSimilarity(struct sGenome *g1, struct sGenome *g2)
+{
+
+	struct sSnpEntry *e1;
+	struct sSnpEntry *e2;
+	struct sChunk *c1;
+	struct sChunk *c2;
+
+	int i;
+	long l=0;
+
+	c1 = g1->firstChunk;
+	c2 = g2->firstChunk;
+	while (c1)	{
+		for (i=0;i<SNPSINCHUNK;i++)	{
+			e1 = &c1->entry[i];
+			e2 = &c2->entry[i];
+			if ( (e1->genotype[0] == e2->genotype[0]) && (IsProperBase(e2->genotype[0])) )
+				l++;
+			if ( (e2->genotype[1] == e2->genotype[1]) && (IsProperBase(e2->genotype[1])) )
+				l++;
+
+			//MessageSnp(0, e1);
+			//MessageSnp(0, e2);
+		}
+
+		c1=c1->next;
+		c2=c2->next;
+	}
+
+
+	return l;
+}
+
+int IsProperBase(char b)
+{
+	if (b=='A' || b=='T' || b=='C' || b=='G')
+		return 1;
+	return 0;
+
 }
