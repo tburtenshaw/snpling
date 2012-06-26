@@ -3,6 +3,7 @@
 #include <commctrl.h>
 #include <string.h>
 #include <stdio.h>
+
 #include "snplingres.h"
 
 #define SNPSINCHUNK 4096	//Wasting this much space isn't too much of a concern
@@ -10,26 +11,53 @@
 #define	MAXCOMMENTS 2048	//Maximum length of comments
 #define MAX_MULTIPATH MAX_PATH * 8	//to load multiple files
 
+#define SEX_UNKNOWN 0
+#define SEX_MALE 1
+#define SEX_FEMALE 2
+
+//Global variables
 HINSTANCE hInst;		// Instance handle
 HWND hwndMain;		//Main window handle
+HWND hwndTree;		//Displays the tree
+HWND hwndInfobox;	//Has information
+HWND hwndChromobox;	//Displays the chromosome
+
+//Window params
+int	heightTreeWnd;
+
+
+//The last x,y coords we used.
+int	lastX;
+int	lastY;
+
+//Struct prototypes
 struct sSnpEntry;
 struct sChunk;	//contains a fix-length array of snps
 struct sChromosome;
 struct sGenome;
 struct sCounts;
 struct sGenomeWindowInfo;
+struct sPerson;
 
 LRESULT CALLBACK MainWndProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
-LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
-int GenomeInfoPaint(HWND hwnd);
+LRESULT CALLBACK TreeWndProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
+LRESULT CALLBACK InfoboxWndProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam);
+
+//GUI
+int TreePaint(HWND hwnd);
+int InfoboxPaint(HWND hwnd, struct sPerson *p);
+void * FindPersonFromCoords(int x, int y);
 
 //Loading
 int SnpFromLine(struct sSnpEntry *snp, char *line);
 int AddLineToComments(struct sGenome *genome, char *line);
 int OpenGenomeDialog(HWND hwnd);
 int LoadGenomeFile(HWND hwnd, char *filename);
+int CountEntry(struct sGenome *genome, struct sSnpEntry *snp);
 char * FilenameStart(char *s);
-int IsolateNameAndDate(struct sGenome *genome);
+int IsolateDate(struct sGenome *genome);
+void * GetPhenotypeNameAndSexFromGenotype(struct sPerson *p);
+int	ArrangeInitialLocation(struct sPerson *p);
 
 //Calculation
 int IsProperBase(char b);	//is it ATC or G? or nothing
@@ -39,6 +67,9 @@ long GenomeSimilarity(struct sGenome *g1, struct sGenome *g2);
 int MessageSnp(HWND hwnd, struct sSnpEntry *snp);
 int MessageCount(HWND hwnd, struct sCounts *count);
 int MessagePoint(HWND hwnd, POINT *p, char *heading);
+
+//Linked list
+void *CreatePerson(void);	//returns a pointer to a malloc'd sPerson
 
 struct sGenomeWindowInfo
 {
@@ -50,6 +81,20 @@ struct sGenomeWindowInfo
 	int		mouseBeenPushed;	//have we clicked the mouse
 };
 
+struct sDisplay				//how the person is displayed on the tree
+{
+	//position
+	int	x;
+	int	y;
+	int	height;
+	int	width;
+	int layer;
+
+	//appearance
+	int	selected;
+
+};
+
 struct sSnpEntry
 {
 	char rstype[4];
@@ -57,6 +102,7 @@ struct sSnpEntry
 	int chrom;
 	long position;
 	char genotype[2];
+	char phasing;	//not sure how to do this yet
 };
 
 struct sChunk
@@ -79,7 +125,8 @@ struct sCounts	//stats to use both per chromosome, and per genome
 
 struct sChromosome
 {
-	struct sChunk pChunk;	//pointers to the chunk the specific chromosome is first found
+	struct sChunk *pChunk;	//pointers to the chunk the specific chromosome is first found
+	int		startEntry;
 	struct sCounts count;
 };
 
@@ -92,21 +139,38 @@ struct sGenome
 
 	char	filename[MAX_PATH];
 	char	*justfilename;	//points to the above without path
-	char	owner[256];	//the user name associated (if we can pull it from a file)
 	char	comments[MAXCOMMENTS];	//This contains the comments from the file
 	long	countXX;		//Does it have two alleles on the x-chromosome (even males have some on 23andme)
 	int		containsY;		//Does it have a Y chromosome?
 	int		containsM;		//Does the data have mitochondrial DNA?
 	int		chromosomeCount;
 
-	struct sGenome *next;
+};
 
-	struct sGenomeWindowInfo windowInfo;
-
+struct sPhenotype
+{
+	int		sex;
+	int		age;
+	char	firstname[64];
+	char	lastname[64];
 };
 
 
-int OpenGenomeDialog(HWND hwnd)
+struct sPerson
+{
+	struct sPhenotype *phenotype;
+	struct sGenome *genome;
+	struct sRelationships *relationships;
+	struct sDisplay *display;					//Used to store how and where the representation appears
+
+	struct	sPerson *next;
+
+};
+
+struct sPerson *firstPerson;	//global var
+struct sPerson *selectedPerson;
+
+int OpenGenomeDialog(HWND hwnd)	//returns 0 if fails
 {
 	OPENFILENAME ofn;
 	char *filenamepart;	//hold the pointer to the specific file if a list is returned
@@ -128,17 +192,17 @@ int OpenGenomeDialog(HWND hwnd)
 	ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST| OFN_HIDEREADONLY | OFN_ALLOWMULTISELECT|OFN_EXPLORER;
 	ofn.lpstrFilter = "All files\0*.*\0Text file (*.txt)\0*.txt\0";
 
-	r=GetOpenFileName(&ofn);
+	r=GetOpenFileName(&ofn);	//Gets the file name
 
 	if (!r)
-		return 0;
+		return 0;				//If there's no file name, then return.
 
-	filenamepart=ofn.lpstrFile+strlen(ofn.lpstrFile)+1;
-	if (!(*filenamepart))	{	//we've only selected one file
+	filenamepart=ofn.lpstrFile+strlen(ofn.lpstrFile)+1;	//this essentially checks whether there's a \0\0
+	if (!(*filenamepart))	{			//we've only selected one file
 		LoadGenomeFile(hwnd, ofn.lpstrFile);
 	}
-	else	{
-		while (*filenamepart)	{
+	else	{							//we've got multiple files selected
+		while (*filenamepart)	{		//so go through them all
 			sprintf(fullpath, "%s\\%s", ofn.lpstrFile, filenamepart);
 			LoadGenomeFile(hwnd, fullpath);
 			filenamepart+=strlen(filenamepart)+1;
@@ -148,153 +212,127 @@ int OpenGenomeDialog(HWND hwnd)
 	return  1;	//success
 }
 
+void *CreatePerson()
+{
+	struct sPerson *p;
+
+	if (!firstPerson)	{
+		firstPerson = malloc(sizeof(struct sPerson));
+		memset(firstPerson,0,sizeof(struct sPerson));
+		//that prev memset of course means firstPerson->next is set to NULL;
+		return firstPerson;
+	}
+
+	p=firstPerson;
+	while	(p->next)	{
+		p=p->next;
+	}
+	p->next=malloc(sizeof(struct sPerson));
+	memset(p->next,0,sizeof(struct sPerson));
+
+	return p->next;
+};
+
+int	DeletePerson(struct sPerson *personToDelete)
+{
+	struct sPerson	*p;
+	struct sPerson	*prevP;
+
+	prevP=NULL;
+	p=firstPerson;
+
+	while	(p)	{
+		if	(p == personToDelete)	{
+			//Removing and freeing the phenotype is easy
+			if (p->phenotype)	{
+				free(p->phenotype);
+			}
+
+			//Removing the genotype means removing all the snp chunks first
+			struct	sChunk	*c;
+			struct	sChunk	*cnext;
+			if	(p->genome)	{
+				c=p->genome->firstChunk;	//go through all the chunks
+				while	(c)	{
+					cnext=c->next;
+					free(c);
+					c=cnext;
+				}
+				free(p->genome);			//then free genome
+
+			}
+
+			//Then remove the display info
+			if (p->display)	{
+				free(p->display);
+			}
+
+			//if selected, hovered, or otherwise name then make them point to previous
+			if (selectedPerson == p)	{
+				selectedPerson = prevP;
+			}
+
+
+			//Now we can remove the node itself
+			if (!prevP)	{//if this is the firstPerson
+				free(firstPerson);
+				firstPerson=p->next;
+				return 1;
+			}
+			prevP->next = p->next;	//point the next in the previous node to the next one.
+			free(p);
+			return 1;
+		}
+
+		prevP=p;
+		p=p->next;
+
+	}
+
+
+	return 0;
+}
+
 int LoadGenomeFile(HWND hwnd, char *filename)
 {
-	FILE * fDNA;
+	FILE * fDNA;	//standard file pointer
 	struct sChunk *snpChunk;
 	struct sChunk *prevChunk;
-	struct sGenome *genome;
+	//struct sGenome *genome;
 	struct sGenome *othergenome;
+
+	struct sPerson *person;
 	int		arrayPos;
+	int		prevChromosomeNumber;
 	POINT	windowloc;
 
-	char	localGenotype[2];	//make it shorter!
-	int		localChromosome;
-	int		containsRealBase;	//it's not a no-call or a placeholder
-
-
-	fDNA = fopen(filename, "r");
+	fDNA = fopen(filename, "r");	//open the filename, readonly and ascii
 	if (!fDNA)
 		return 0;
 
-	genome = malloc(sizeof(struct sGenome));	//Get memory for new genome
-	memset(genome, 0, sizeof(struct sGenome));	//Set it all to zero initially
+	person=CreatePerson();
+
+	person->genome = malloc(sizeof(struct sGenome));	//Get memory for new genome
+	memset(person->genome, 0, sizeof(struct sGenome));	//Set it all to zero initially
 	//Set some characteristics of the genome
-	strcpy(genome->filename, filename);	//Filename
-	genome->next = NULL;	//this will be set already (with memset) but I like to do it explicitly
-
-	othergenome = (void *)GetWindowLong(hwnd, GWL_USERDATA);
-	windowloc.y=24;
-	if (othergenome == 0)	{	//if this is our first genome, then it's stored in main window
-		SetWindowLong(hwnd, GWL_USERDATA, (long)genome);
-		//MessageBox(hwnd, "Using main window","test",0);
-	}
-	else	{
-		windowloc.y+=130;
-		while (othergenome->next)	{
-			othergenome=othergenome->next;
-			windowloc.y+=130;
-			//MessageBox(hwnd, "Trying linked list","test",0);
-		}
-		othergenome->next = genome;
-	}
-
+	strcpy(person->genome->filename, filename);	//Filename
 
 
 	snpChunk = malloc(sizeof(struct sChunk));
-	genome->firstChunk=snpChunk;
+	person->genome->firstChunk=snpChunk;
 	arrayPos=0;
 
-	char line[256];
+	char line[256];		//reads each line of the txt file, up to the first 256 chars
+	prevChromosomeNumber=0;
 	while(fgets(line, sizeof(line), fDNA))     {
 		if (line[0]=='#')	{//handle comments line
-			AddLineToComments(genome, line);
+			AddLineToComments(person->genome, line);
 		}
 		else if (SnpFromLine(&snpChunk->entry[arrayPos], line)) {
-			localChromosome=snpChunk->entry[arrayPos].chrom;
-			localGenotype[0]=snpChunk->entry[arrayPos].genotype[0];
-			localGenotype[1]=snpChunk->entry[arrayPos].genotype[1];
+			if (snpChunk->entry[arrayPos].chrom > prevChromosomeNumber)
+				person->genome->chromosome[snpChunk->entry[arrayPos].chrom].pChunk=snpChunk;
 
-			genome->count.total++;
-			genome->chromosome[localChromosome].count.total++;
-
-			if (IsProperBase(localGenotype[0]) || IsProperBase(localGenotype[1]))
-				{containsRealBase=1;}
-			else
-				{containsRealBase=0;}
-
-			//Count homozygous
-			if ((localGenotype[0] == localGenotype[1]) && (containsRealBase))	{
-				genome->count.homozygous++;
-				genome->chromosome[localChromosome].count.homozygous++;
-				switch (localGenotype[0])	{	//the other will be the same
-					case 'A':
-						genome->count.adenine+=2;
-						genome->chromosome[localChromosome].count.adenine+=2;
-					break;
-					case 'T':
-						genome->count.thymine+=2;
-						genome->chromosome[localChromosome].count.thymine+=2;
-					break;
-					case 'C':
-						genome->count.cytosine+=2;
-						genome->chromosome[localChromosome].count.cytosine+=2;
-					break;
-					case 'G':
-						genome->count.guanine+=2;
-						genome->chromosome[localChromosome].count.guanine+=2;
-					break;
-				}
-			}
-			else if (containsRealBase)	{
-				switch (localGenotype[0])	{	//the other will be the same
-					case 'A':
-						genome->count.adenine++;
-						genome->chromosome[localChromosome].count.adenine++;
-					break;
-					case 'T':
-						genome->count.thymine++;
-						genome->chromosome[localChromosome].count.thymine++;
-					break;
-					case 'C':
-						genome->count.cytosine++;
-						genome->chromosome[localChromosome].count.cytosine++;
-					break;
-					case 'G':
-						genome->count.guanine++;
-						genome->chromosome[localChromosome].count.guanine++;
-					break;
-				}
-				switch (localGenotype[1])	{	//the other will be the same
-					case 'A':
-						genome->count.adenine++;
-						genome->chromosome[localChromosome].count.adenine++;
-					break;
-					case 'T':
-						genome->count.thymine++;
-						genome->chromosome[localChromosome].count.thymine++;
-					break;
-					case 'C':
-						genome->count.cytosine++;
-						genome->chromosome[localChromosome].count.cytosine++;
-					break;
-					case 'G':
-						genome->count.guanine++;
-						genome->chromosome[localChromosome].count.guanine++;
-					break;
-				}
-
-			}
-			//Count autosomal
-			if (localChromosome<23)	{
-				genome->count.autosomal++;
-				//genome->chromosome[localChromosome].count.autosomal++; //not much sense to count this per chrom
-			}
-			else	{
-				if ((localChromosome==24) && (containsRealBase))	{
-					genome->containsY=1;
-				}
-				else if ((localChromosome==25) && (containsRealBase))	{
-					genome->containsM=1;	//contains mitochondrial
-				}
-
-				else if ((localChromosome==23) && (containsRealBase))	{
-					if 	(IsProperBase(localGenotype[0]) && IsProperBase(localGenotype[1])) {
-						genome->countXX++;
-					}
-				}
-			}
-
+			CountEntry(person->genome, &snpChunk->entry[arrayPos]);
 			arrayPos++;
 			if (arrayPos==SNPSINCHUNK)	{	//if this chunk is full - make a new one
 				prevChunk=snpChunk;
@@ -304,20 +342,90 @@ int LoadGenomeFile(HWND hwnd, char *filename)
 				arrayPos=0;
 			}
 		}
+
 	}
 	fclose(fDNA);
 
-	//MessageBox(0, genome->filename, "Filename", 0);
-	genome->justfilename=FilenameStart(genome->filename);
-	IsolateNameAndDate(genome);	//Get the name and date loaded
-	genome->windowInfo.hwnd = CreateWindow("GenomeInfoBoxClass", genome->filename, WS_CHILD|WS_VISIBLE, 32,windowloc.y, 180,120, hwnd, NULL, hInst, NULL);
-	SetWindowLong(genome->windowInfo.hwnd, GWL_USERDATA, (long)genome);
+	person->genome->justfilename=FilenameStart(person->genome->filename);
+	IsolateDate(person->genome);		//Get the date loaded
+	GetPhenotypeNameAndSexFromGenotype(person);		//Populate some
+	ArrangeInitialLocation(person);
+
+	InvalidateRect(hwndTree,NULL, 0);
+	InvalidateRect(hwndInfobox,NULL, 0);
 
 	return 0;
 }
 
+int	ArrangeInitialLocation(struct sPerson *p)
+{
+	RECT clientRect;
+
+	if (p->display)
+		return 0;	//return 0 if there's already a display
+
+	p->display= malloc(sizeof(struct sDisplay));
+	memset(p->display,0,sizeof(struct sDisplay));
+
+
+	GetClientRect(hwndTree, &clientRect);
+
+	p->display->x = lastX+40;
+
+	if (p->display->x+40>clientRect.right)	{
+		p->display->x=0;
+		lastY+=40;
+	}
+
+	p->display->y = lastY;
+
+
+	lastX=p->display->x;
+	lastY=p->display->y;
+
+	return 1;
+}
+
+void	*GetPhenotypeNameAndSexFromGenotype(struct sPerson *p)
+{
+	if (!p->phenotype)	{
+		p->phenotype=malloc(sizeof(struct sPhenotype));
+		memset(p->phenotype, 0, sizeof(struct sPhenotype));
+	}
+
+	if	(p->genome->containsY)
+		p->phenotype->sex=SEX_MALE;
+	else
+		p->phenotype->sex=SEX_FEMALE;
+
+
+	if (!p->genome->justfilename)
+		return p->phenotype;
+
+	if (strncmp(p->genome->justfilename, "genome_", 7))	{
+		p->phenotype->lastname[0]=0;
+		return p->phenotype;
+	}
+
+	strcpy(p->phenotype->lastname, p->genome->justfilename+7);
+
+
+
+	return p->phenotype;
+}
+
 static BOOL InitApplication(void)
 {
+
+	//Initalise some variables
+	firstPerson=NULL;
+	selectedPerson=NULL;
+	heightTreeWnd=300;
+
+	lastX=0;
+	lastY=0;
+
+	//Register the Window Classes we use
 	WNDCLASS wc;
 
 	//Main window
@@ -333,16 +441,27 @@ static BOOL InitApplication(void)
 	if (!RegisterClass(&wc))
 		return 0;
 
-	//Genome infoboxes
+	//Tree window;
 	memset(&wc,0,sizeof(WNDCLASS));
 	wc.style = CS_DBLCLKS;
-	wc.lpfnWndProc = (WNDPROC)GenomeInfoProc;
+	wc.lpfnWndProc = (WNDPROC)TreeWndProc;
 	wc.hInstance = hInst;
-	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
-	wc.lpszClassName = "GenomeInfoBoxClass";
+	wc.hbrBackground = (HBRUSH)(COLOR_WINDOWFRAME);
+	wc.lpszClassName = "TreeWndClass";
 	wc.lpszMenuName = MAKEINTRESOURCE(IDMAINMENU);
 	wc.hCursor = LoadCursor(NULL,IDC_ARROW);
-	wc.hIcon = NULL;
+	if (!RegisterClass(&wc))
+		return 0;
+
+	//Infobox window;
+	memset(&wc,0,sizeof(WNDCLASS));
+	wc.style = CS_DBLCLKS;
+	wc.lpfnWndProc = (WNDPROC)InfoboxWndProc;
+	wc.hInstance = hInst;
+	wc.hbrBackground = (HBRUSH)(COLOR_WINDOWFRAME);
+	wc.lpszClassName = "InfoboxWndClass";
+	wc.lpszMenuName = MAKEINTRESOURCE(IDMAINMENU);
+	wc.hCursor = LoadCursor(NULL,IDC_ARROW);
 	if (!RegisterClass(&wc))
 		return 0;
 
@@ -370,13 +489,10 @@ void MainWndProc_OnCommand(HWND hwnd, int id, HWND hwndCtl, UINT codeNotify)
 		break;
 
 		case IDM_COMPARE:
-		long l;
-		struct sGenome *genome;
-		char buffer[255];
-		genome = (void*)GetWindowLong(hwnd, GWL_USERDATA);
-		l = GenomeSimilarity(genome, genome->next);
-		sprintf(buffer, "Long: %i", l);
-		MessageBox(hwnd, buffer, "Compare", 0);
+		//not really compare, just tries deleting
+		DeletePerson(selectedPerson);
+		InvalidateRect(hwndTree,NULL, 0);
+		InvalidateRect(hwndInfobox,NULL, 0);
 		break;
 
 		case IDM_EXIT:
@@ -388,16 +504,192 @@ void MainWndProc_OnCommand(HWND hwnd, int id, HWND hwndCtl, UINT codeNotify)
 LRESULT CALLBACK MainWndProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 {
 	switch (msg) {
-	case WM_COMMAND:
-		HANDLE_WM_COMMAND(hwnd,wParam,lParam,MainWndProc_OnCommand);
-		break;
-	case WM_DESTROY:
-		PostQuitMessage(0);
-		break;
-	default:
-		return DefWindowProc(hwnd,msg,wParam,lParam);
+		case WM_CREATE:	//when this window is made, make its main children
+			RECT clientRect;
+			GetClientRect(hwnd, &clientRect);
+			hwndTree=CreateWindow("TreeWndClass","Tree", WS_CHILD|WS_VISIBLE,0,0,clientRect.right,300,
+			hwnd, NULL, NULL, NULL);
+
+			hwndInfobox=CreateWindow("InfoboxWndClass", "Infobox", WS_CHILD|WS_VISIBLE, 0, heightTreeWnd, clientRect.right-123,  clientRect.bottom-heightTreeWnd,
+			hwnd, NULL, NULL, NULL);
+
+			break;
+		case WM_SIZE:
+			GetClientRect(hwnd, &clientRect);
+			MoveWindow(hwndTree, 0,0,clientRect.right, heightTreeWnd,1);
+			break;
+		case WM_COMMAND:
+			HANDLE_WM_COMMAND(hwnd,wParam,lParam,MainWndProc_OnCommand);
+			break;
+		case WM_DESTROY:
+			PostQuitMessage(0);
+			break;
+		default:
+			return DefWindowProc(hwnd,msg,wParam,lParam);
 	}
 	return 0;
+}
+
+LRESULT CALLBACK InfoboxWndProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
+{
+	switch (msg) {
+		case WM_PAINT:
+			InfoboxPaint(hwnd, selectedPerson);
+			break;
+		default:
+			return DefWindowProc(hwnd,msg,wParam,lParam);
+	}
+
+	return 0;
+}
+
+int InfoboxPaint(HWND hwnd, struct sPerson *p)
+{
+	HDC hdc;
+	PAINTSTRUCT  ps;
+	int	y;
+	RECT clientRect;
+	RECT outputRect;
+	TEXTMETRIC textMetric;
+	char textbuffer[255];
+	int	textlen;
+	int heightFont;
+
+	GetClientRect(hwnd, &clientRect);
+
+	if (!p)	{//if there's noone selected
+		sprintf(textbuffer, "none selected");
+	}
+	else	{
+		sprintf(textbuffer,"%s", p->genome->filename);
+	}
+
+	textlen=strlen(textbuffer);
+
+	hdc=BeginPaint(hwnd, &ps);
+	GetTextMetrics(hdc, &textMetric);
+	heightFont= textMetric.tmHeight;
+	y=clientRect.top;
+	outputRect.left=clientRect.left; 	outputRect.right=clientRect.right;
+	outputRect.top=y;
+	outputRect.bottom=y+heightFont;
+	ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print filename
+
+	EndPaint(hwnd, &ps);
+
+	return 1;
+}
+
+
+LRESULT CALLBACK TreeWndProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
+{
+	switch (msg) {
+		case WM_PAINT:
+			return TreePaint(hwnd);
+			break;
+		case WM_LBUTTONDOWN:
+			selectedPerson = FindPersonFromCoords(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+			InvalidateRect(hwndInfobox, NULL, 0);
+			InvalidateRect(hwndTree, NULL, 0);
+			break;
+
+		default:
+			return DefWindowProc(hwnd,msg,wParam,lParam);
+	}
+
+	return 0;
+}
+
+void * FindPersonFromCoords(int x, int y)
+{
+	struct sPerson *p;
+
+	p=firstPerson;
+
+	while (p)	{
+		if ((x >= p->display->x) &&
+			(x <=p->display->x+40) &&
+			(y >= p->display->y) &&
+			(y <= p->display->y+40))	{
+
+			return p;
+		}
+		p=p->next;
+	}
+
+	return NULL;
+}
+
+int TreePaint(HWND hwnd)	{
+
+	HDC          hdcMem;
+	HBITMAP      hbmMem;
+	HANDLE       hOld;
+
+	PAINTSTRUCT  ps;
+	HDC          hdc;
+
+	RECT	clientRect;
+	HPEN		hPen;
+	HPEN		hPenSelected;
+	HBRUSH		hBrush;
+
+	int x,y;
+
+	struct	sPerson	*p;
+
+	hdc = BeginPaint(hwnd, &ps);
+
+    // Create an off-screen DC for double-buffering (should move this so it's not done every paint)
+    hdcMem = CreateCompatibleDC(hdc);
+    GetClientRect(hwnd, &clientRect);
+	hbmMem = CreateCompatibleBitmap(hdc, clientRect.right, clientRect.bottom);
+
+    hOld   = SelectObject(hdcMem, hbmMem);
+
+    // Draw into hdcMem here
+
+	hPen = CreatePen(PS_SOLID, 0, RGB(235,140,0));
+	hPenSelected = CreatePen(PS_SOLID, 0, RGB(255,240,0));
+	hBrush = CreateSolidBrush(RGB(220,120,20));
+
+	SelectObject(hdcMem, hBrush);
+	p=firstPerson;
+	while (p)	{
+		x = p->display->x;
+		y = p->display->y;
+
+		if (p == selectedPerson)	{
+			SelectObject(hdcMem, hPenSelected);
+		}	else	{
+			SelectObject(hdcMem, hPen);
+		}
+
+		if	(p->phenotype->sex==SEX_MALE)
+			Rectangle(hdcMem, x, y, x+30, y+30);
+		if	(p->phenotype->sex==SEX_FEMALE)
+			Ellipse(hdcMem, x, y, x+30, y+30);
+		p=p->next;
+	}
+
+
+
+	// Transfer the off-screen DC to the screen
+    BitBlt(hdc, 0, 0, clientRect.right, clientRect.bottom, hdcMem, 0, 0, SRCCOPY);
+
+	//Clean up objects
+	DeleteObject(hBrush);
+	DeleteObject(hPen);
+	DeleteObject(hPenSelected);
+
+    // Free-up the off-screen DC
+    SelectObject(hdcMem, hOld);
+    DeleteObject(hbmMem);
+    DeleteDC    (hdcMem);
+	EndPaint(hwnd, &ps);
+
+	return 1;
+
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, INT nCmdShow)
@@ -406,7 +698,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	HANDLE hAccelTable;
 
 	hInst = hInstance;
-	if (!InitApplication())
+	if (!InitApplication())	//registers the window classes
 		return 0;
 	hAccelTable = LoadAccelerators(hInst,MAKEINTRESOURCE(IDACCEL));
 	if ((hwndMain = CreatesnplingWndClassWnd()) == (HWND)0)
@@ -457,14 +749,21 @@ int SnpFromLine(struct sSnpEntry *snp, char *line)
 {
 	char *result = NULL;
 
-	result = strtok(line, "\t");
+	result = strtok(line, "\t");	//gets the first "token" up until the tab, it'll be the SNP name
 	if (!result) return 0;
-	if ((result[0]=='r') && (result[1]=='s'))	{
+	if ((result[0]=='r') && (result[1]=='s'))	{		//if it's an rs
 		snp->rsnumber=strtol(result+2,NULL,10);
 		snp->rstype[0]='r';snp->rstype[1]='s';snp->rstype[2]=0;
 	}
+	else	{
+		if (result[0]='i')	{
+		snp->rsnumber=strtol(result+1,NULL,10);
+		snp->rstype[0]='i';snp->rstype[0]=0;
+		}
+	}
 
-	result = strtok(NULL, "\t");
+
+	result = strtok(NULL, "\t");	//then the next token (it's next, because we use NULL) should be the chromosome
 	if (!result) return 0;
 	if (result[0]=='X')
 		snp->chrom = 23;
@@ -473,13 +772,13 @@ int SnpFromLine(struct sSnpEntry *snp, char *line)
 	else if (result[0]=='M')
 		snp->chrom = 25;
 	else
-		snp->chrom = strtol(result, NULL, 10);
+		snp->chrom = strtol(result, NULL, 10);	//10 is for base-10 (decimal)
 
-	result = strtok(NULL, "\t");
+	result = strtok(NULL, "\t");	//then position
 	if (!result) return 0;
 	snp->position = strtol(result, NULL, 10);
 
-	result = strtok(NULL, "\t");
+	result = strtok(NULL, "\t");	//then genotype
 	if (!result) return 0;
 	snp->genotype[0] = result[0];
 	snp->genotype[1] = result[1];
@@ -493,7 +792,7 @@ int AddLineToComments(struct sGenome *genome, char *line)
 	int lencomments;
 
 	line++;	//skip the #
-	if (line[0] == ' ')
+	if (line[0] == ' ')	//skip leading space
 		line++;
 
 	lencomments=strlen(genome->comments);
@@ -511,6 +810,8 @@ int AddLineToComments(struct sGenome *genome, char *line)
 	return 1;
 }
 
+
+/*
 LRESULT CALLBACK GenomeInfoProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 {
 	struct sGenome *genome;
@@ -654,7 +955,7 @@ int GenomeInfoPaint(HWND hwnd)
 
 	totalbases=genome->count.adenine+ genome->count.thymine+ genome->count.cytosine+ genome->count.guanine;
 	if (totalbases>0)	{
-		sprintf(textbuffer, "A:%i T:%i C:%i G:%i", genome->count.adenine*100/totalbases, genome->count.thymine*100/totalbases, genome->count.cytosine*100/totalbases, genome->count.guanine*100/totalbases);
+		sprintf(textbuffer, "A:%0.1f%% T:%0.1f%% C:%0.1f%% G:%0.1f%%", ((float)(genome->count.adenine*1000/totalbases)/10), (float)genome->count.thymine*100/totalbases, (float)genome->count.cytosine*100/totalbases, (float)genome->count.guanine*100/totalbases);
 		textlen=strlen(textbuffer);
 		outputRect.top=y;
 		y+=heightFont+1;
@@ -662,7 +963,7 @@ int GenomeInfoPaint(HWND hwnd)
 		ExtTextOut(hdc, 0,outputRect.top,ETO_OPAQUE, &outputRect, textbuffer, textlen, NULL);	//print autosomal snps
 	}
 
-	sprintf(textbuffer, "Name %s", genome->owner);
+	sprintf(textbuffer, "%s", genome->owner);
 	textlen=strlen(textbuffer);
 	outputRect.top=y;
 	y+=heightFont+1;
@@ -681,6 +982,8 @@ int GenomeInfoPaint(HWND hwnd)
 
 	return 0;
 }
+*/
+
 
 long GenomeSimilarity(struct sGenome *g1, struct sGenome *g2)
 {
@@ -725,18 +1028,8 @@ int IsProperBase(char b)
 
 }
 
-int IsolateNameAndDate(struct sGenome *genome)
+int IsolateDate(struct sGenome *genome)
 {
-	if (!genome->justfilename)
-		return 0;
-
-	if (strncmp(genome->justfilename, "genome_", 7))	{
-		genome->owner[0]=0;
-		return 0;
-	}
-
-	strcpy(genome->owner, genome->justfilename+7);
-
 
 
 	return 0;
@@ -750,4 +1043,113 @@ char * FilenameStart(char *s)
 	}
 
 	return s;
+}
+
+int CountEntry(struct sGenome *genome, struct sSnpEntry *snp)
+{
+	char	localGenotype[2];	//make it shorter!
+	int		localChromosome;
+
+
+	int		properBase0;
+	int		properBase1;
+	int		containsRealBase;	//it's not a no-call or a placeholder
+	int		bothRealBases;		//AG not A-, or T
+
+
+
+	localChromosome=snp->chrom;
+	localGenotype[0]=snp->genotype[0];
+	localGenotype[1]=snp->genotype[1];
+
+	genome->count.total++;
+	genome->chromosome[localChromosome].count.total++;
+
+	properBase0 = IsProperBase(localGenotype[0]);
+	properBase1 = IsProperBase(localGenotype[1]);
+
+	containsRealBase = (properBase0 || properBase1);	//is one of these a proper base?
+	bothRealBases = (properBase0 && properBase1);	//is one of these a proper base?
+
+	//Count homozygous
+	if ((localGenotype[0] == localGenotype[1]) && (containsRealBase))	{
+		genome->count.homozygous++;
+		genome->chromosome[localChromosome].count.homozygous++;
+		switch (localGenotype[0])	{	//the other will be the same
+			case 'A':
+				genome->count.adenine+=2;
+				genome->chromosome[localChromosome].count.adenine+=2;
+			break;
+			case 'T':
+				genome->count.thymine+=2;
+				genome->chromosome[localChromosome].count.thymine+=2;
+			break;
+			case 'C':
+				genome->count.cytosine+=2;
+				genome->chromosome[localChromosome].count.cytosine+=2;
+			break;
+			case 'G':
+				genome->count.guanine+=2;
+				genome->chromosome[localChromosome].count.guanine+=2;
+			break;
+		}
+	}
+	else if (containsRealBase)	{
+		switch (localGenotype[0])	{	//the other will be the same
+			case 'A':
+				genome->count.adenine++;
+				genome->chromosome[localChromosome].count.adenine++;
+			break;
+			case 'T':
+				genome->count.thymine++;
+				genome->chromosome[localChromosome].count.thymine++;
+			break;
+			case 'C':
+				genome->count.cytosine++;
+				genome->chromosome[localChromosome].count.cytosine++;
+			break;
+			case 'G':
+				genome->count.guanine++;
+				genome->chromosome[localChromosome].count.guanine++;
+			break;
+		}
+		switch (localGenotype[1])	{	//the other will be the same
+			case 'A':
+				genome->count.adenine++;
+				genome->chromosome[localChromosome].count.adenine++;
+			break;
+			case 'T':
+				genome->count.thymine++;
+				genome->chromosome[localChromosome].count.thymine++;
+			break;
+			case 'C':
+				genome->count.cytosine++;
+				genome->chromosome[localChromosome].count.cytosine++;
+			break;
+			case 'G':
+				genome->count.guanine++;
+				genome->chromosome[localChromosome].count.guanine++;
+			break;
+		}
+	}
+	//Count autosomal
+	if (localChromosome<23)	{
+		genome->count.autosomal++;
+		//genome->chromosome[localChromosome].count.autosomal++; //not much sense to count this per chrom
+	}
+	else	{
+		if ((localChromosome==24) && (containsRealBase))	{
+			genome->containsY=1;
+		}
+		else if ((localChromosome==25) && (containsRealBase))	{
+			genome->containsM=1;	//contains mitochondrial
+		}
+		else if ((localChromosome==23) && (containsRealBase))	{
+			if 	(bothRealBases) {
+				genome->countXX++;
+			}
+		}
+	}
+
+	return 0;
 }
