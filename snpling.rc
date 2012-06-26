@@ -13,6 +13,7 @@ BEGIN
         BEGIN
         MENUITEM "&Open", IDM_OPEN
 		MENUITEM "&Compare", IDM_COMPARE
+		MENUITEM SEPARATOR
         MENUITEM "E&xit", IDM_EXIT
         END
     POPUP "&Help"
